@@ -1,12 +1,16 @@
 name: Cinema City watchdog
 
-# Zkontroluje rozpis Cinema City a když přibudou termíny Odyssei v IMAXu,
-# založí issue (GitHub z něj pošle e-mail i push do appky).
+# Zkontroluje rozpis Cinema City a když přibudou termíny hlídaných filmů
+# v IMAXu, založí issue (GitHub z něj pošle e-mail i push do appky).
+#
+# Hlídané filmy jsou v matici FILMS níž — jeden řádek "slug:podřetězec názvu".
+# Každý film má vlastní stav (state/<slug>.json) i vlastní issue, ale běží
+# ve stejném jobu za sebou: dva paralelní joby by si přepsaly commit stavu.
 #
 # Naplánováno 4× za hodinu, i když cílem je detekce do ~30 minut: GitHub
 # u scheduled workflows běhy pod zátěží houfně zahazuje (naměřeno 1 z 8).
 # Přebývající běhy nic nestojí (veřejné repo) a nic nerozbijí — hlášení se
-# odvíjí od stavu v state/seen.json, ne od času, takže běh navíc jen zjistí,
+# odvíjí od stavu v state/<slug>.json, ne od času, takže běh navíc jen zjistí,
 # že se nic nezměnilo, a mlčí. Minuty schválně mimo :00 a :30 a rozprostřené,
 # ať netrefí stejnou špičku.
 on:
@@ -41,47 +45,62 @@ jobs:
           python-version: "3.12"
 
       - name: Zkontrolovat rozpis
-        id: watch
-        # Chceš hlídat jiný film nebo jiný typ sálu? Přepiš tyhle dvě hodnoty
-        # a smaž state/seen.json (jinak se nový výběr porovná se starým stavem).
+        # Chceš hlídat další film? Přidej řádek do FILMS ve tvaru
+        # "slug:podřetězec názvu". Pozor, API vrací české názvy — Duna, ne Dune.
+        # Jiný typ sálu? Přepiš AUDITORIUM_PATTERN. Když měníš existující řádek,
+        # smaž i jeho state/<slug>.json, jinak se nový výběr porovná se starým.
         env:
-          FILM_PATTERN: odyss
+          FILMS: |
+            odyssea:odyss
+            duna:duna
           AUDITORIUM_PATTERN: imax
         run: |
-          python3 watch.py \
-            --state state/seen.json \
-            --report report.md \
-            --title title.txt \
-            ${{ inputs.force_report && '--force-report' || '' }}
+          set -euo pipefail
+          while IFS=: read -r slug pattern; do
+            [ -n "$slug" ] || continue
+            echo "::group::$slug (film ~ $pattern)"
+            FILM_PATTERN="$pattern" python3 watch.py \
+              --state "state/$slug.json" \
+              --report "report-$slug.md" \
+              --title "title-$slug.txt" \
+              ${{ inputs.force_report && '--force-report' || '' }}
+            echo "::endgroup::"
+          done <<< "$FILMS"
 
       - name: Založit issue s novými termíny
-        if: steps.watch.outputs.has_news == 'true'
+        # Bez podmínky na výstup kroku: watch.py zakládá report jen když má co
+        # hlásit, takže o počtu issue rozhoduje existence souborů. Krok se
+        # nesmí přeskočit celý — jeden film může mít novinky a druhý ne.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           # Přiřazení vlastníkovi je klíčové: GitHub posílá e-mail defaultně jen
           # u "Participating" notifikací (přiřazení, zmínky). Pouhé "Watching"
           # repa dává jen web/mobile notifikaci, e-mail je tam vypnutý.
-          url=$(gh issue create \
-            --title "$(cat title.txt)" \
-            --body-file report.md \
-            --assignee "${{ github.repository_owner }}")
-          echo "Založeno: $url"
-          # Issue je jen doručovací kanál pro notifikaci — e-mail odejde už při
-          # založení, takže ho rovnou zavíráme a seznam otevřených zůstává
-          # prázdný. Obsah zůstane čitelný mezi zavřenými issues.
-          gh issue close "$url" --reason completed
+          shopt -s nullglob
+          for report in report-*.md; do
+            slug=${report#report-}; slug=${slug%.md}
+            url=$(gh issue create \
+              --title "$(cat "title-$slug.txt")" \
+              --body-file "$report" \
+              --assignee "${{ github.repository_owner }}")
+            echo "Založeno ($slug): $url"
+            # Issue je jen doručovací kanál pro notifikaci — e-mail odejde už
+            # při založení, takže ho rovnou zavíráme a seznam otevřených
+            # zůstává prázdný. Obsah zůstane čitelný mezi zavřenými issues.
+            gh issue close "$url" --reason completed
+          done
 
       - name: Uložit stav zpátky do repa
         run: |
-          rm -f report.md title.txt
-          if git diff --quiet -- state/seen.json; then
+          rm -f report-*.md title-*.txt
+          if git diff --quiet -- state/; then
             echo "Stav beze změny, není co commitovat."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state/seen.json
+          git add state/
           git commit -m "Aktualizace stavu rozpisu ($(date -u '+%Y-%m-%d %H:%M UTC'))"
           # Mezitím mohl doběhnout jiný commit — zkusíme rebase a push znovu.
           for i in 1 2 3; do
