@@ -244,14 +244,18 @@ def group_by_cinema(events):
     return order.items()
 
 
-def title_for(new_events):
-    film = new_events[0]["film"]
-    days = sorted({e["datetime"][:10] for e in new_events})
+def title_for(events, kind="new"):
+    """Titulek issue. kind="new" pro nové termíny, "gone" pro zrušené."""
+    film = events[0]["film"]
+    days = sorted({e["datetime"][:10] for e in events})
     span = fmt_short(days[0])
     if len(days) > 1:
         span += f"–{fmt_short(days[-1])}"
-    n = len(new_events)
-    word = "nový termín" if n == 1 else ("nové termíny" if n < 5 else "nových termínů")
+    n = len(events)
+    if kind == "gone":
+        word = "zrušený termín" if n == 1 else ("zrušené termíny" if n < 5 else "zrušených termínů")
+    else:
+        word = "nový termín" if n == 1 else ("nové termíny" if n < 5 else "nových termínů")
     return f"🎬 {film} v IMAXu: {n} {word} ({span})"
 
 
@@ -307,7 +311,7 @@ def main():
         return
 
     body = render(new_events, gone)
-    title = title_for(new_events) if new_events else "🎬 Odyssea v IMAXu: zrušené termíny"
+    title = title_for(new_events) if new_events else title_for(gone, kind="gone")
     with open(args.report, "w", encoding="utf-8") as fh:
         fh.write(body + "\n")
     with open(args.title, "w", encoding="utf-8") as fh:

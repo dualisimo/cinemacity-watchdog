@@ -78,9 +78,21 @@ jobs:
           # u "Participating" notifikací (přiřazení, zmínky). Pouhé "Watching"
           # repa dává jen web/mobile notifikaci, e-mail je tam vypnutý.
           shopt -s nullglob
+          # GitHub API občas vrátí přechodnou chybu ("Something went wrong
+          # while executing your query") — zkusit to znovu, ať kvůli ní
+          # neselže celý běh a e-mail nečeká na další kontrolu.
+          retry() {
+            local i
+            for i in 1 2 3 4; do
+              "$@" && return 0
+              echo "Pokus $i selhal, zkouším znovu za $((i * 10)) s…" >&2
+              sleep $((i * 10))
+            done
+            "$@"
+          }
           for report in report-*.md; do
             slug=${report#report-}; slug=${slug%.md}
-            url=$(gh issue create \
+            url=$(retry gh issue create \
               --title "$(cat "title-$slug.txt")" \
               --body-file "$report" \
               --assignee "${{ github.repository_owner }}")
@@ -88,7 +100,7 @@ jobs:
             # Issue je jen doručovací kanál pro notifikaci — e-mail odejde už
             # při založení, takže ho rovnou zavíráme a seznam otevřených
             # zůstává prázdný. Obsah zůstane čitelný mezi zavřenými issues.
-            gh issue close "$url" --reason completed
+            retry gh issue close "$url" --reason completed
           done
 
       - name: Uložit stav zpátky do repa
